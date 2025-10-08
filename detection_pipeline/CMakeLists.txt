@@ -45,6 +45,7 @@ target_link_libraries(armor_detector_node
 # Install executable
 install(TARGETS
   camera_publisher_node
+  armor_detector_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
