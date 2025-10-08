@@ -18,8 +18,9 @@ ArmorDetectorNode::ArmorDetectorNode() : Node("armor_detector_node"), frame_coun
 {
     // Subscribe to the camera publisher topic
     image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
-        /* TODO: What topic are we subscribing to? What is its name? */, rclcpp::SensorDataQoS(),
-        std::bind(&/* TODO: What method in this class uses the topic message? */, this, std::placeholders::_1));
+        "camera/image_raw", 
+        rclcpp::SensorDataQoS(),
+        std::bind(&ArmorDetectorNode::image_callback, this, std::placeholders::_1));
 
     RCLCPP_INFO(this->get_logger(), "ArmorDetectorNode subscribed to topic");
 }
@@ -106,15 +107,30 @@ std::vector<cv::RotatedRect> ArmorDetectorNode::search(cv::Mat& frame, cv::Scala
     // TODO: Complete the rest of the method. The onboarding instructions document will be very helpful.
 
     // 1) Image Preprocessing
-
+    cv::cvtColor(frame, frame, cv::COLOR_BGR2HSV);
+    cv::blur(frame, frame, cv::Size(3, 3));
     // 2) Color segmentation
-
+    cv::Mat mask;
+    cv::inRange(frame, lowerHSV, upperHSV, mask);
+    cv::inRange(frame, lowerHSV2, upperHSV2, frame);
+    frame = mask | frame;    
     // 2.5) Edge Detection
-    
+    cv::Canny(frame, frame, 100, 200);
     // 3) Contour Detection
-
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(frame, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+    std::vector<cv::RotatedRect> light_bars;
+    for (const auto& contour : contours) {
+        if (contour.size() < 5) continue; // Need at least 5 points to fit ellipse
+        cv::RotatedRect rect = cv::fitEllipse(contour);
+        if (is_light_bar(rect)) {
+            light_bars.push_back(rect);
+        }
+    }
     // 4) Contour Filtering
-
+    for (auto& rect : light_bars) {   
+        draw_rotated_rect(frame, rect);
+    }
     return {}; // Default return value, no armor found
 }
 
@@ -140,16 +156,20 @@ bool ArmorDetectorNode::is_light_bar(cv::RotatedRect &rect)
 {
     // TODO: Use the LIGHT_BAR constants defined in the header file to complete this method.
     // You may want to read the OpenCV documentation for RotatedRect
-
+    
     // Verify that the light bar width is valid
-
+    if (rect.size.width < LIGHT_BAR_WIDTH_LOWER_LIMIT) return false;
     // Verify that the light bar height is valid
-
+    if (rect.size.height < LIGHT_BAR_HEIGHT_LOWER_LIMIT) return false;
     // Verify that the light bar angle is valid
-    // You will want to compare against both the limit and its supplement; think about the unit circle
+    if (rect.angle > LIGHT_BAR_ANGLE_LIMIT) return false;
 
     // Verify that the light bar aspect ratio is valid
     // Aspect ratio refers to height / width, not width / height
+    float aspect_ratio = rect.size.height / rect.size.width;
+    if (aspect_ratio < LIGHT_BAR_ASPECT_RATIO_LOWER_LIMIT) return false;
+
+    return true;
 }
 
 /*
@@ -163,20 +183,35 @@ bool ArmorDetectorNode::is_armor(cv::RotatedRect &left_rect, cv::RotatedRect &ri
 
     // Verify that the light bars are roughly parallel by checking that their difference does not exceed the threshold
     // Again, you will want to compare against both the limit and its supplement
+    if (std::abs(left_rect.angle - right_rect.angle) > ARMOR_ANGLE_DIFF_LIMIT) return false;
 
     // Verify that the ratio between the light bar aspect ratios (that's a mouthful) is within the threshold
     // You will want to compare both left / right and right / left against the threshold
+    float left_aspect_ratio = left_rect.size.height / left_rect.size.width;
+    float right_aspect_ratio = right_rect.size.height / right_rect.size.width;
+    float aspect_ratio_ratio = left_aspect_ratio / right_aspect_ratio;
+    if (aspect_ratio_ratio > ARMOR_LIGHT_BAR_ASPECT_RATIO_RATIO_LIMIT) return false;
 
     // Verify that the light bars are at roughly the same elevation (as in their y difference is within the threshold)
     // The way the constant was determined assumes that you normalize this difference using the average light bar height
     // What that means is that the expression you should be checking is abs(y_left - y_right) / avg_height
-
+    float y_diff = std::abs(left_rect.center.y - right_rect.center.y);
+    float avg_height = (left_rect.size.height + right_rect.size.height) / 2.f;
+    if (y_diff / avg_height > ARMOR_Y_DIFF_LIMIT) return false;
     // Verify that the ratio between light bar heights is within the threshold
     // Again, you will want to compare both left / right and right / left
+    float height_ratio = left_rect.size.height / right_rect.size.height;
+    if ( height_ratio > ARMOR_HEIGHT_RATIO_LIMIT) return false;
 
     // Verify that the armor aspect ratio is within the threshold
     // For some goofy reason, the constant for this step requires that you calculate aspect ratio as width / height
     // There are multiple ways to define armor plate "height" and "width." Hopefully your idea is effective!
+    float armor_width = std::abs(left_rect.center.x - right_rect.center.x);
+    float armor_height = (left_rect.size.height + right_rect.size.height) / 2.f;
+    float armor_aspect_ratio = armor_width / armor_height;
+    if (armor_aspect_ratio > ARMOR_ASPECT_RATIO_LIMIT) return false;
+
+    return true;
 }
 
 /*
